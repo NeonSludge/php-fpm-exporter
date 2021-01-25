@@ -1,10 +1,16 @@
-FROM       golang:alpine as builder
+FROM       golang:1-buster as builder
 
-RUN apk --no-cache add bash make openssl
-COPY . /go/src/github.com/bakins/php-fpm-exporter
-RUN cd /go/src/github.com/bakins/php-fpm-exporter && ./script/build
+WORKDIR /usr/src/php-fpm-exporter
+
+COPY / /usr/src/php-fpm-exporter/
+
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64
+
+RUN go build -o php-fpm-exporter -ldflags="-s -w" ./cmd/php-fpm-exporter
 
 FROM scratch
-COPY --from=builder /go/src/github.com/bakins/php-fpm-exporter/php-fpm-exporter.linux.amd64 /php-fpm-exporter
+COPY --from=builder /usr/src/php-fpm-exporter/php-fpm-exporter /php-fpm-exporter
 
 ENTRYPOINT [ "/php-fpm-exporter" ]
