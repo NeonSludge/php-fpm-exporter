@@ -22,17 +22,12 @@ package zap
 
 import (
 	"runtime"
-	"strings"
 	"sync"
 
 	"go.uber.org/zap/internal/bufferpool"
 )
 
 var (
-	_stacktraceIgnorePrefixes = []string{
-		"runtime.goexit",
-		"runtime.main",
-	}
 	_stacktracePool = sync.Pool{
 		New: func() interface{} {
 			return newProgramCounters(64)
@@ -40,18 +35,18 @@ var (
 	}
 )
 
-func takeStacktrace() string {
+func takeStacktrace(skip int) string {
 	buffer := bufferpool.Get()
 	defer buffer.Free()
 	programCounters := _stacktracePool.Get().(*programCounters)
 	defer _stacktracePool.Put(programCounters)
 
+	var numFrames int
 	for {
-		// Skip the call to runtime.Counters and takeStacktrace so that the
+		// Skip the call to runtime.Callers and takeStacktrace so that the
 		// program counters start at the caller of takeStacktrace.
-		n := runtime.Callers(2, programCounters.pcs)
-		if n < cap(programCounters.pcs) {
-			programCounters.pcs = programCounters.pcs[:n]
+		numFrames = runtime.Callers(skip+2, programCounters.pcs)
+		if numFrames < len(programCounters.pcs) {
 			break
 		}
 		// Don't put the too-short counter slice back into the pool; this lets
@@ -60,11 +55,12 @@ func takeStacktrace() string {
 	}
 
 	i := 0
-	frames := runtime.CallersFrames(programCounters.pcs)
+	frames := runtime.CallersFrames(programCounters.pcs[:numFrames])
+
+	// Note: On the last iteration, frames.Next() returns false, with a valid
+	// frame, but we ignore this frame. The last frame is a a runtime frame which
+	// adds noise, since it's only either runtime.main or runtime.goexit.
 	for frame, more := frames.Next(); more; frame, more = frames.Next() {
-		if shouldIgnoreStacktraceFunction(frame.Function) {
-			continue
-		}
 		if i != 0 {
 			buffer.AppendByte('\n')
 		}
@@ -78,15 +74,6 @@ func takeStacktrace() string {
 	}
 
 	return buffer.String()
-}
-
-func shouldIgnoreStacktraceFunction(function string) bool {
-	for _, prefix := range _stacktraceIgnorePrefixes {
-		if strings.HasPrefix(function, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 type programCounters struct {

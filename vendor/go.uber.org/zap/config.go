@@ -21,32 +21,44 @@
 package zap
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
 	"go.uber.org/zap/zapcore"
 )
 
-// SamplingConfig sets a sampling strategy for the logger. Sampling
-// caps the global CPU and I/O load that logging puts on your process while
-// attempting to preserve a representative subset of your logs.
+// SamplingConfig sets a sampling strategy for the logger. Sampling caps the
+// global CPU and I/O load that logging puts on your process while attempting
+// to preserve a representative subset of your logs.
 //
-// Values configured here are per-second. See zapcore.NewSampler for details.
+// If specified, the Sampler will invoke the Hook after each decision.
+//
+// Values configured here are per-second. See zapcore.NewSamplerWithOptions for
+// details.
 type SamplingConfig struct {
-	Initial    int `json:"initial" yaml:"initial"`
-	Thereafter int `json:"thereafter" yaml:"thereafter"`
+	Initial    int                                           `json:"initial" yaml:"initial"`
+	Thereafter int                                           `json:"thereafter" yaml:"thereafter"`
+	Hook       func(zapcore.Entry, zapcore.SamplingDecision) `json:"-" yaml:"-"`
 }
 
-// Config offers a declarative way to construct a logger.
-//
-// It doesn't do anything that can't be done with New, Options, and the various
+// Config offers a declarative way to construct a logger. It doesn't do
+// anything that can't be done with New, Options, and the various
 // zapcore.WriteSyncer and zapcore.Core wrappers, but it's a simpler way to
 // toggle common options.
+//
+// Note that Config intentionally supports only the most common options. More
+// unusual logging setups (logging to network connections or message queues,
+// splitting output between multiple files, etc.) are possible, but require
+// direct use of the zapcore package. For sample code, see the package-level
+// BasicConfiguration and AdvancedConfiguration examples.
+//
+// For an example showing runtime log level changes, see the documentation for
+// AtomicLevel.
 type Config struct {
 	// Level is the minimum enabled logging level. Note that this is a dynamic
 	// level, so calling Config.Level.SetLevel will atomically change the log
-	// level of all loggers descended from this config. The zero value is
-	// InfoLevel.
+	// level of all loggers descended from this config.
 	Level AtomicLevel `json:"level" yaml:"level"`
 	// Development puts the logger in development mode, which changes the
 	// behavior of DPanicLevel and takes stacktraces more liberally.
@@ -61,16 +73,21 @@ type Config struct {
 	// Sampling sets a sampling policy. A nil SamplingConfig disables sampling.
 	Sampling *SamplingConfig `json:"sampling" yaml:"sampling"`
 	// Encoding sets the logger's encoding. Valid values are "json" and
-	// "console".
+	// "console", as well as any third-party encodings registered via
+	// RegisterEncoder.
 	Encoding string `json:"encoding" yaml:"encoding"`
 	// EncoderConfig sets options for the chosen encoder. See
 	// zapcore.EncoderConfig for details.
 	EncoderConfig zapcore.EncoderConfig `json:"encoderConfig" yaml:"encoderConfig"`
-	// OutputPaths is a list of paths to write logging output to. See Open for
-	// details.
+	// OutputPaths is a list of URLs or file paths to write logging output to.
+	// See Open for details.
 	OutputPaths []string `json:"outputPaths" yaml:"outputPaths"`
-	// ErrorOutputPaths is a list of paths to write internal logger errors to.
+	// ErrorOutputPaths is a list of URLs to write internal logger errors to.
 	// The default is standard error.
+	//
+	// Note that this setting only affects internal errors; for sample code that
+	// sends error-level logs to a different location from info- and debug-level
+	// logs, see the package-level AdvancedConfiguration example.
 	ErrorOutputPaths []string `json:"errorOutputPaths" yaml:"errorOutputPaths"`
 	// InitialFields is a collection of fields to add to the root logger.
 	InitialFields map[string]interface{} `json:"initialFields" yaml:"initialFields"`
@@ -84,6 +101,7 @@ func NewProductionEncoderConfig() zapcore.EncoderConfig {
 		LevelKey:       "level",
 		NameKey:        "logger",
 		CallerKey:      "caller",
+		FunctionKey:    zapcore.OmitKey,
 		MessageKey:     "msg",
 		StacktraceKey:  "stacktrace",
 		LineEnding:     zapcore.DefaultLineEnding,
@@ -94,8 +112,8 @@ func NewProductionEncoderConfig() zapcore.EncoderConfig {
 	}
 }
 
-// NewProductionConfig is the recommended production configuration. Logging is
-// enabled at InfoLevel and above.
+// NewProductionConfig is a reasonable production logging configuration.
+// Logging is enabled at InfoLevel and above.
 //
 // It uses a JSON encoder, writes to standard error, and enables sampling.
 // Stacktraces are automatically included on logs of ErrorLevel and above.
@@ -123,6 +141,7 @@ func NewDevelopmentEncoderConfig() zapcore.EncoderConfig {
 		LevelKey:       "L",
 		NameKey:        "N",
 		CallerKey:      "C",
+		FunctionKey:    zapcore.OmitKey,
 		MessageKey:     "M",
 		StacktraceKey:  "S",
 		LineEnding:     zapcore.DefaultLineEnding,
@@ -133,8 +152,8 @@ func NewDevelopmentEncoderConfig() zapcore.EncoderConfig {
 	}
 }
 
-// NewDevelopmentConfig is a reasonable development configuration. Logging is
-// enabled at DebugLevel and above.
+// NewDevelopmentConfig is a reasonable development logging configuration.
+// Logging is enabled at DebugLevel and above.
 //
 // It enables development mode (which makes DPanicLevel logs panic), uses a
 // console encoder, writes to standard error, and disables sampling.
@@ -160,6 +179,10 @@ func (cfg Config) Build(opts ...Option) (*Logger, error) {
 	sink, errSink, err := cfg.openSinks()
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.Level == (AtomicLevel{}) {
+		return nil, fmt.Errorf("missing Level")
 	}
 
 	log := New(
@@ -191,14 +214,24 @@ func (cfg Config) buildOptions(errSink zapcore.WriteSyncer) []Option {
 		opts = append(opts, AddStacktrace(stackLevel))
 	}
 
-	if cfg.Sampling != nil {
+	if scfg := cfg.Sampling; scfg != nil {
 		opts = append(opts, WrapCore(func(core zapcore.Core) zapcore.Core {
-			return zapcore.NewSampler(core, time.Second, int(cfg.Sampling.Initial), int(cfg.Sampling.Thereafter))
+			var samplerOpts []zapcore.SamplerOption
+			if scfg.Hook != nil {
+				samplerOpts = append(samplerOpts, zapcore.SamplerHook(scfg.Hook))
+			}
+			return zapcore.NewSamplerWithOptions(
+				core,
+				time.Second,
+				cfg.Sampling.Initial,
+				cfg.Sampling.Thereafter,
+				samplerOpts...,
+			)
 		}))
 	}
 
 	if len(cfg.InitialFields) > 0 {
-		fs := make([]zapcore.Field, 0, len(cfg.InitialFields))
+		fs := make([]Field, 0, len(cfg.InitialFields))
 		keys := make([]string, 0, len(cfg.InitialFields))
 		for k := range cfg.InitialFields {
 			keys = append(keys, k)

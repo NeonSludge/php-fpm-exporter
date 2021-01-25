@@ -132,12 +132,11 @@ func (e *Exporter) healthz(w http.ResponseWriter, r *http.Request) {
 
 // Run starts the http server and collecting metrics. It generally does not return.
 func (e *Exporter) Run() error {
-
 	c := e.newCollector()
 	if err := prometheus.Register(c); err != nil {
 		return errors.Wrap(err, "failed to register metrics")
 	}
-	prometheus.Unregister(prometheus.NewProcessCollector(os.Getpid(), ""))
+	prometheus.Unregister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{ReportErrors: false}))
 	prometheus.Unregister(prometheus.NewGoCollector())
 
 	http.HandleFunc("/healthz", e.healthz)

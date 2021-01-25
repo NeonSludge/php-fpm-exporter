@@ -48,6 +48,10 @@ const (
 
 // LevelEnablerFunc is a convenient way to implement zapcore.LevelEnabler with
 // an anonymous function.
+//
+// It's particularly useful when splitting log output between different
+// outputs (e.g., standard error and standard out). For sample code, see the
+// package-level AdvancedConfiguration example.
 type LevelEnablerFunc func(zapcore.Level) bool
 
 // Enabled calls the wrapped function.
@@ -74,7 +78,7 @@ func NewAtomicLevel() AtomicLevel {
 	}
 }
 
-// NewAtomicLevelAt is a convienence function that creates an AtomicLevel
+// NewAtomicLevelAt is a convenience function that creates an AtomicLevel
 // and then calls SetLevel with the given level.
 func NewAtomicLevelAt(l zapcore.Level) AtomicLevel {
 	a := NewAtomicLevel()

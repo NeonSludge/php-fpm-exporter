@@ -22,13 +22,15 @@ package zapcore
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap/internal/bufferpool"
 	"go.uber.org/zap/internal/exit"
-	"go.uber.org/zap/internal/multierror"
+
+	"go.uber.org/multierr"
 )
 
 var (
@@ -69,10 +71,11 @@ func NewEntryCaller(pc uintptr, file string, line int, ok bool) EntryCaller {
 
 // EntryCaller represents the caller of a logging function.
 type EntryCaller struct {
-	Defined bool
-	PC      uintptr
-	File    string
-	Line    int
+	Defined  bool
+	PC       uintptr
+	File     string
+	Line     int
+	Function string
 }
 
 // String returns the full path and line number of the caller.
@@ -135,7 +138,8 @@ func (ec EntryCaller) TrimmedPath() string {
 
 // An Entry represents a complete log message. The entry's structured context
 // is already serialized, but the log level, time, message, and call site
-// information are available for inspection and modification.
+// information are available for inspection and modification. Any fields left
+// empty will be omitted when encoding.
 //
 // Entries are pooled, so any functions that accept them MUST be careful not to
 // retain references to them.
@@ -156,6 +160,8 @@ const (
 	// WriteThenNoop indicates that nothing special needs to be done. It's the
 	// default behavior.
 	WriteThenNoop CheckWriteAction = iota
+	// WriteThenGoexit runs runtime.Goexit after Write.
+	WriteThenGoexit
 	// WriteThenPanic causes a panic after Write.
 	WriteThenPanic
 	// WriteThenFatal causes a fatal os.Exit after Write.
@@ -209,12 +215,12 @@ func (ce *CheckedEntry) Write(fields ...Field) {
 	}
 	ce.dirty = true
 
-	var errs multierror.Error
+	var err error
 	for i := range ce.cores {
-		errs = errs.Append(ce.cores[i].Write(ce.Entry, fields))
+		err = multierr.Append(err, ce.cores[i].Write(ce.Entry, fields))
 	}
 	if ce.ErrorOutput != nil {
-		if err := errs.AsError(); err != nil {
+		if err != nil {
 			fmt.Fprintf(ce.ErrorOutput, "%v write error: %v\n", time.Now(), err)
 			ce.ErrorOutput.Sync()
 		}
@@ -228,6 +234,8 @@ func (ce *CheckedEntry) Write(fields ...Field) {
 		panic(msg)
 	case WriteThenFatal:
 		exit.Exit()
+	case WriteThenGoexit:
+		runtime.Goexit()
 	}
 }
 
